@@ -14,6 +14,7 @@ const REWARD_DAYS = parseInt((process.env.REWARD_DAYS || '7').trim());
 const ADMIN_ID = (process.env.ADMIN_ID || '').trim(); // Pegando o ID do dono sem espaços
 
 const adminState = {}; // Memória temporária para o painel de admin
+const adminWelcomeSteps = {}; // Memória temporária para as etapas de boas-vindas do admin
 
 // Busca a configuração ou cria uma padrão
 async function getConfig() {
@@ -22,6 +23,35 @@ async function getConfig() {
     config = await prisma.config.create({ data: { id: 'default' } });
   }
   return config;
+}
+
+// Função auxiliar para analisar as mensagens de boas-vindas (suporta formato legado de string única ou formato de sequência JSON)
+function parseWelcomeMessages(config, username) {
+  let messages = [];
+  try {
+    const parsed = JSON.parse(config.welcomeText);
+    if (Array.isArray(parsed)) {
+      messages = parsed;
+    } else {
+      messages = [{
+        text: config.welcomeText,
+        mediaId: config.welcomeMediaId,
+        mediaType: config.welcomeMediaType
+      }];
+    }
+  } catch (e) {
+    messages = [{
+      text: config.welcomeText,
+      mediaId: config.welcomeMediaId,
+      mediaType: config.welcomeMediaType
+    }];
+  }
+
+  return messages.map(msg => ({
+    text: (msg.text || '').replace(/{nome}/g, username),
+    mediaId: msg.mediaId,
+    mediaType: msg.mediaType
+  }));
 }
 
 // Menu principal estático
@@ -71,21 +101,30 @@ bot.start(async (ctx) => {
   }
 
   const config = await getConfig();
-  const welcomeMessage = config.welcomeText.replace(/{nome}/g, username);
-  
-  if (config.welcomeMediaId) {
-    try {
-      if (config.welcomeMediaType === 'photo') {
-        await ctx.replyWithPhoto(config.welcomeMediaId, { caption: welcomeMessage, parse_mode: 'HTML', ...MAIN_MENU });
-      } else if (config.welcomeMediaType === 'video') {
-        await ctx.replyWithVideo(config.welcomeMediaId, { caption: welcomeMessage, parse_mode: 'HTML', ...MAIN_MENU });
+  const welcomeMessages = parseWelcomeMessages(config, username);
+
+  for (let i = 0; i < welcomeMessages.length; i++) {
+    const msg = welcomeMessages[i];
+    const isLast = (i === welcomeMessages.length - 1);
+    const menu = isLast ? MAIN_MENU : {};
+
+    if (msg.mediaId) {
+      try {
+        if (msg.mediaType === 'photo') {
+          await ctx.replyWithPhoto(msg.mediaId, { caption: msg.text || undefined, parse_mode: 'HTML', ...menu });
+        } else if (msg.mediaType === 'video') {
+          await ctx.replyWithVideo(msg.mediaId, { caption: msg.text || undefined, parse_mode: 'HTML', ...menu });
+        } else if (msg.text) {
+          await ctx.reply(msg.text, { parse_mode: 'HTML', ...menu });
+        }
+      } catch (e) {
+        if (msg.text) {
+          await ctx.reply(msg.text, { parse_mode: 'HTML', ...menu });
+        }
       }
-    } catch (e) {
-      // Fallback em caso de erro na mídia
-      await ctx.reply(welcomeMessage, { parse_mode: 'HTML', ...MAIN_MENU });
+    } else if (msg.text) {
+      await ctx.reply(msg.text, { parse_mode: 'HTML', ...menu });
     }
-  } else {
-    await ctx.reply(welcomeMessage, { parse_mode: 'HTML', ...MAIN_MENU });
   }
 });
 
@@ -286,9 +325,49 @@ bot.action(/admin_edit_(monthly|quarterly|lifetime)/, async (ctx) => {
 // Edição de Boas Vindas
 bot.action('admin_edit_welcome', async (ctx) => {
   if (ctx.from.id.toString() !== ADMIN_ID) return;
-  adminState[ADMIN_ID] = 'WAITING_WELCOME';
-  ctx.reply('Para definir as boas vindas, você pode me enviar um Texto Simples, ou enviar uma <b>Foto/Vídeo com a legenda que deseja salvar</b>.\n\n(Você pode usar {nome} no texto para citar o cliente).', { parse_mode: 'HTML' });
+  adminState[ADMIN_ID] = 'WAITING_WELCOME_STEP';
+  adminWelcomeSteps[ADMIN_ID] = [];
+  ctx.reply('Vamos configurar as mensagens de boas-vindas em sequência.\n\nEnvie a <b>1ª mensagem</b> (pode ser texto simples, ou foto/vídeo com legenda). Você pode usar {nome} para citar o cliente.', { parse_mode: 'HTML' });
   ctx.answerCbQuery();
+});
+
+bot.action('admin_welcome_add', async (ctx) => {
+  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  adminState[ADMIN_ID] = 'WAITING_WELCOME_STEP';
+  const nextNum = (adminWelcomeSteps[ADMIN_ID] || []).length + 1;
+  await ctx.reply(`Envie a <b>${nextNum}ª mensagem</b> (texto simples, ou foto/vídeo com legenda):`, { parse_mode: 'HTML' });
+  ctx.answerCbQuery();
+});
+
+bot.action('admin_welcome_finish', async (ctx) => {
+  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  const steps = adminWelcomeSteps[ADMIN_ID] || [];
+  if (steps.length > 0) {
+    await prisma.config.update({
+      where: { id: 'default' },
+      data: {
+        welcomeText: JSON.stringify(steps),
+        welcomeMediaId: null,
+        welcomeMediaType: null
+      }
+    });
+    await ctx.reply('✅ Sequência de mensagens de boas-vindas salva com sucesso!');
+  } else {
+    await ctx.reply('❌ Nenhuma mensagem cadastrada.');
+  }
+  delete adminState[ADMIN_ID];
+  delete adminWelcomeSteps[ADMIN_ID];
+  ctx.answerCbQuery();
+  await sendAdminPanel(ctx);
+});
+
+bot.action('admin_welcome_cancel', async (ctx) => {
+  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  delete adminState[ADMIN_ID];
+  delete adminWelcomeSteps[ADMIN_ID];
+  await ctx.reply('❌ Configuração cancelada.');
+  ctx.answerCbQuery();
+  await sendAdminPanel(ctx);
 });
 
 // Anúncio
@@ -353,8 +432,8 @@ bot.on('message', async (ctx, next) => {
       return sendAdminPanel(ctx);
     }
     
-    // Verifica se estamos esperando boas vindas (texto ou mídia)
-    if (state === 'WAITING_WELCOME') {
+    // Verifica se estamos esperando uma mensagem da sequência de boas vindas
+    if (state === 'WAITING_WELCOME_STEP') {
       let text = ctx.message.text || ctx.message.caption || '';
       let mediaId = null;
       let mediaType = null;
@@ -367,14 +446,28 @@ bot.on('message', async (ctx, next) => {
         mediaType = 'video';
       }
       
-      await prisma.config.update({ 
-        where: { id: 'default' }, 
-        data: { welcomeText: text || 'Bem-vindo!', welcomeMediaId: mediaId, welcomeMediaType: mediaType } 
-      });
+      if (!adminWelcomeSteps[ADMIN_ID]) {
+        adminWelcomeSteps[ADMIN_ID] = [];
+      }
+      adminWelcomeSteps[ADMIN_ID].push({ text, mediaId, mediaType });
       
-      ctx.reply('✅ Mensagem de boas-vindas e mídia salva com sucesso!');
-      delete adminState[ADMIN_ID];
-      return sendAdminPanel(ctx);
+      adminState[ADMIN_ID] = 'WAITING_WELCOME_OPTIONS';
+      
+      await ctx.reply(`Mensagem ${adminWelcomeSteps[ADMIN_ID].length} adicionada com sucesso!\n\nO que deseja fazer agora?`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '➕ Adicionar Outra Mensagem', callback_data: 'admin_welcome_add' }],
+            [{ text: '✅ Finalizar e Salvar', callback_data: 'admin_welcome_finish' }],
+            [{ text: '❌ Cancelar', callback_data: 'admin_welcome_cancel' }]
+          ]
+        }
+      });
+      return;
+    }
+
+    // Se estiver esperando que o admin clique em uma opção
+    if (state === 'WAITING_WELCOME_OPTIONS') {
+      return ctx.reply('Por favor, selecione uma das opções acima clicando nos botões ou envie /admin para cancelar.');
     }
     
     // Verifica se estamos esperando anúncio (usa copyMessage para mandar igual)
