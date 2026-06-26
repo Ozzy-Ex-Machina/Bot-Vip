@@ -210,7 +210,9 @@ bot.action(/buy_(monthly|quarterly|lifetime)/, async (ctx) => {
       }
     });
 
-    await ctx.reply(`Aqui está seu PIX Copia e Cola no valor de R$ ${price.toFixed(2).replace('.', ',')}.\n\n\`${qrCode}\`\n\nBasta copiar o texto acima e colar no seu banco. O acesso será liberado aqui automaticamente após o pagamento!`, { parse_mode: 'HTML' });
+    await ctx.reply(`Aqui está seu PIX Copia e Cola no valor de R$ ${price.toFixed(2).replace('.', ',')}.`, { parse_mode: 'HTML' });
+    await ctx.reply(`<code>${qrCode}</code>`, { parse_mode: 'HTML' });
+    await ctx.reply(`Basta copiar o texto acima e colar no seu banco. O acesso será liberado aqui automaticamente após o pagamento!`, { parse_mode: 'HTML' });
 
   } catch (error) {
     console.error('Erro PushinPay:', error?.response?.data || error.message);
