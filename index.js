@@ -501,6 +501,8 @@ app.post('/webhook/pushinpay', async (req, res) => {
   try {
     res.status(200).send('OK');
     const { id, status } = req.body; 
+    console.log(`[WEBHOOK RECEBIDO] ID: ${id} | Status: ${status}`);
+    console.log(`Corpo completo:`, req.body);
     
     if (status !== 'paid' && status !== 'approved') return;
 
