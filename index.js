@@ -226,7 +226,8 @@ bot.action(/buy_(monthly|quarterly|lifetime)/, async (ctx) => {
 
   try {
     const response = await axios.post('https://api.pushinpay.com.br/api/pix/cashIn', {
-      value: valorCentavos
+      value: valorCentavos,
+      webhook_url: process.env.WEBHOOK_URL || 'https://bot-vip-o6to.onrender.com/webhook/pushinpay'
     }, {
       headers: {
         'Authorization': `Bearer ${process.env.PUSHINPAY_TOKEN}`,
